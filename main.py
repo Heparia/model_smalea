@@ -13,7 +13,7 @@ app = FastAPI()
 
 origins = [
     "http://localhost:5173",
-    "https://smalea-leaf-classifier.vercel.app/"
+    "https://smalea-leaf-classifier.vercel.app"
 ]
 
 app.add_middleware(
