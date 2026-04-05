@@ -36,6 +36,35 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
+interpreter_feature = Interpreter(model_path="./feature_model.tflite")
+interpreter_feature.allocate_tensors()
+
+input_feature = interpreter_feature.get_input_details()
+output_feature = interpreter_feature.get_output_details()
+
+embeddings = np.load("embedding.npy", mmap_mode="r") 
+labels = np.load("labels.npy", mmap_mode="r")
+image_paths = np.load("image_paths.npy")
+
+def cosine_similarity(query, embeddings):
+    norm = np.linalg.norm(query)
+    if norm == 0:
+        return np.zeros(len(embeddings))
+
+    query_norm = query / norm
+    sims = np.dot(embeddings, query_norm)
+    return sims
+
+def find_most_similar(query_embedding):
+    sims = cosine_similarity(query_embedding, embeddings)
+    idx = np.argmax(sims)
+
+    return {
+        "class": class_names[labels[idx]],
+        "image_path": image_paths[idx],
+        "score": float(sims[idx])
+    }
+
 def prepare_image(file_bytes: bytes) -> np.ndarray:
     img = Image.open(BytesIO(file_bytes)).convert("RGB")
     img = img.resize(IMG_SIZE)
@@ -44,6 +73,8 @@ def prepare_image(file_bytes: bytes) -> np.ndarray:
     return img_batch
 
 df = pd.read_csv("data.csv")
+df["jenis_daun_normalized"] = df["jenis_daun"].str.strip().str.lower()
+
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
@@ -100,7 +131,47 @@ async def predict(file: UploadFile = File(...)):
 
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
-    
+
+@app.post("/embedding")
+async def predict_and_retrieve(file: UploadFile = File(...), top_k: int = 5):
+    sims = None
+    pred_shape = None
+    pred_lain = None
+    try:
+        contents = await file.read()
+
+        input_data = prepare_image(contents)
+
+
+        async with semaphore:
+            interpreter_feature.set_tensor(input_feature[0]['index'], input_data)
+            interpreter_feature.invoke()
+
+            pred = interpreter_feature.get_tensor(output_feature[0]['index'])
+            pred = np.squeeze(pred)
+
+        sims = cosine_similarity(pred, embeddings)
+
+        top_indices = np.argsort(sims)[::-1][:top_k]
+        results = []
+        for idx in top_indices:
+            results.append({
+                "label": str(labels[idx]),
+                "similarity": float(sims[idx]),
+                "path": str(image_paths[idx])
+            })
+
+        return results
+        # return result
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "pred_shape": pred_shape,
+            "pred lain": pred_lain,
+            "sims_type": str(type(sims))
+        }
+
 # Endpoint root (informasi dasar API)
 @app.get("/")
 def root():
@@ -123,7 +194,6 @@ async def get_all_daun():
 async def get_daun(nama_daun: str):
     try:
         nama_daun = nama_daun.strip().lower()
-        df["jenis_daun_normalized"] = df["jenis_daun"].str.strip().str.lower()
         row = df[df["jenis_daun_normalized"] == nama_daun].iloc[0]
         return {"result": row.drop("jenis_daun_normalized").to_dict()}
     except IndexError:
