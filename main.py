@@ -30,7 +30,7 @@ class_names = ['bukan daun','ganja', 'jambu biji', 'jati blanda', 'jungrahab', '
 IMG_SIZE = (224, 224)
 
 # Load TFLite model
-interpreter = Interpreter(model_path="./model_smalea.tflite")
+interpreter = Interpreter(model_path="./model_fiks.tflite")
 interpreter.allocate_tensors()
 
 input_details = interpreter.get_input_details()
