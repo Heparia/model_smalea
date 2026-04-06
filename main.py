@@ -8,6 +8,7 @@ import pandas as pd
 from PIL import Image
 import time
 from io import BytesIO
+import os
 
 app = FastAPI()
 
@@ -36,15 +37,15 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-interpreter_feature = Interpreter(model_path="./feature_model.tflite")
+interpreter_feature = Interpreter(model_path="./data/feature_model.tflite")
 interpreter_feature.allocate_tensors()
 
 input_feature = interpreter_feature.get_input_details()
 output_feature = interpreter_feature.get_output_details()
 
-embeddings = np.load("embedding.npy", mmap_mode="r") 
-labels = np.load("labels.npy", mmap_mode="r")
-image_paths = np.load("image_paths.npy")
+embeddings = np.load("./data/embedding.npy", mmap_mode="r") 
+labels = np.load("./data/labels.npy", mmap_mode="r")
+image_paths = np.load("./data/image_paths.npy")
 
 def cosine_similarity(query, embeddings):
     norm = np.linalg.norm(query)
@@ -133,35 +134,97 @@ async def predict(file: UploadFile = File(...)):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.post("/embedding")
-async def predict_and_retrieve(file: UploadFile = File(...), top_k: int = 5):
+async def embedding(file: UploadFile = File(...), top_k: int = 5):
     sims = None
     pred_shape = None
     pred_lain = None
     try:
         contents = await file.read()
-
         input_data = prepare_image(contents)
-
-
         async with semaphore:
+            interpreter.set_tensor(input_details[0]['index'], input_data)
+
+            start_time = time.perf_counter()
+
+            interpreter.invoke()
+            output_index = output_details[0]["index"]
+            predictions = interpreter.get_tensor(output_index)[0]
+
+            predictions = np.nan_to_num(predictions, nan=0.0, posinf=1.0, neginf=0.0)
+
+            top_idx = int(np.argmax(predictions))
+            top_conf = float(predictions[top_idx])
+            top_label = class_names[top_idx]
+
             interpreter_feature.set_tensor(input_feature[0]['index'], input_data)
             interpreter_feature.invoke()
 
             pred = interpreter_feature.get_tensor(output_feature[0]['index'])
             pred = np.squeeze(pred)
+            end_time = time.perf_counter()
+            inference_time_ms = (end_time - start_time) * 1000
+        
+
+        all_idx = predictions.argsort()[::-1]
+
+        results_1 = [
+            {
+                "label": df.iloc[idx]["jenis_daun"],
+                "confidence": float(predictions[idx]),
+            }
+            for idx in all_idx
+        ]
+
+        results_2 = []
+
+        for idx in all_idx:
+            label = class_names[idx]
+
+            row = df[df["jenis_daun"] == label].iloc[0]
+
+            results_2.append(
+                row.replace([np.nan, np.inf, -np.inf], "").to_dict()
+            )
 
         sims = cosine_similarity(pred, embeddings)
+        sorted_indices = np.argsort(sims)[::-1]
 
-        top_indices = np.argsort(sims)[::-1][:top_k]
         results = []
-        for idx in top_indices:
-            results.append({
-                "label": str(labels[idx]),
-                "similarity": float(sims[idx]),
-                "path": str(image_paths[idx])
-            })
+        anchor_found = False
 
-        return results
+        for i, idx in enumerate(sorted_indices):
+            path = image_paths[idx]
+
+            # ambil label dari path
+            path_label = path.split("/")[2]  # atau pakai os.path
+
+            if not anchor_found:
+                if path_label == top_label:
+                    # ini anchor (hasil pertama sesuai klasifikasi)
+                    anchor_found = True
+                    start_index = i
+
+                    results.append({
+                        "label": str(labels[idx]),
+                        "similarity": float(sims[idx]),
+                        "path": str(path)
+                    })
+            else:
+                # setelah anchor → bebas ambil
+                results.append({
+                    "label": str(labels[idx]),
+                    "similarity": float(sims[idx]),
+                    "path": str(path)
+                })
+
+            if len(results) >= top_k:
+                break
+        return {
+            "results": results,
+            "top classification": top_label,
+            "top confidence": top_conf,
+            "interface time": inference_time_ms
+        }
         # return result
 
     except Exception as e:
