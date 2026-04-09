@@ -2,6 +2,9 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from tflite_runtime.interpreter import Interpreter
+from fastapi.staticfiles import StaticFiles
+import urllib.parse
+from starlette.responses import Response
 import numpy as np
 import asyncio
 import pandas as pd
@@ -11,6 +14,16 @@ from io import BytesIO
 import os
 
 app = FastAPI()
+
+class CORSStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        # Tambahkan header ini agar library PDF di frontend bisa membaca gambar
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        return response
+    
+app.mount("/static", CORSStaticFiles(directory="static"), name="static")
 
 origins = [
     "http://localhost:5173",
@@ -193,7 +206,9 @@ async def embedding(file: UploadFile = File(...), top_k: int = 5):
         anchor_found = False
 
         for i, idx in enumerate(sorted_indices):
-            path = image_paths[idx]
+            path = str(image_paths[idx])
+            path_baru = path.replace("train/train/", "static/")
+            safe_url = urllib.parse.quote(path_baru)
 
             # ambil label dari path
             path_label = path.split("/")[2]  # atau pakai os.path
@@ -207,14 +222,14 @@ async def embedding(file: UploadFile = File(...), top_k: int = 5):
                     results.append({
                         "label": str(labels[idx]),
                         "similarity": float(sims[idx]),
-                        "path": str(path)
+                        "path": safe_url
                     })
             else:
                 # setelah anchor → bebas ambil
                 results.append({
                     "label": str(labels[idx]),
                     "similarity": float(sims[idx]),
-                    "path": str(path)
+                    "path": safe_url
                 })
 
             if len(results) >= top_k:
@@ -261,3 +276,4 @@ async def get_daun(nama_daun: str):
         return {"result": row.drop("jenis_daun_normalized").to_dict()}
     except IndexError:
         return {"error": "Daun tidak ditemukan"}
+
